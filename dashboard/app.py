@@ -627,7 +627,7 @@ class ConflictDashboard:
             st.info("No data available for mapping")
     
     def render_trends_tab(self):
-        """Render trends analysis tab - FIXED with better error handling"""
+        """Render trends analysis tab - SIMPLIFIED WORKING VERSION"""
         if not st.session_state.data_loaded:
             st.info("👈 Collect data from the sidebar to begin")
             return
@@ -636,9 +636,9 @@ class ConflictDashboard:
             st.info("No data available")
             return
         
-        data = st.session_state.processed_data.copy()  # Make a copy to avoid modifying original
+        data = st.session_state.processed_data.copy()
         
-        st.markdown('<div class="sub-header">Temporal Trends</div>', 
+        st.markdown('<div class="sub-header">📈 Temporal Trends</div>', 
                    unsafe_allow_html=True)
         
         # Find date column
@@ -646,278 +646,212 @@ class ConflictDashboard:
         for col in ['date', 'created_at', 'published_at', 'collected_at', 'seendate']:
             if col in data.columns:
                 date_col = col
-                st.info(f"Using date column: **{date_col}**")
                 break
         
-        if date_col:
-            try:
-                # Clean the date column - remove NaN values
-                data_clean = data.dropna(subset=[date_col]).copy()
-                
-                if data_clean.empty:
-                    st.warning(f"No valid dates found in '{date_col}' column")
-                    return
-                
-                # Function to safely parse dates
-                def safe_parse_date(date_str):
-                    try:
-                        if pd.isna(date_str):
-                            return None
-                        
-                        # Convert to string if not already
-                        date_str = str(date_str).strip()
-                        
-                        # Handle common formats
-                        if 'T' in date_str and 'Z' in date_str:
-                            # ISO format with Z timezone (2025-12-02T14:00:00Z)
-                            date_str = date_str.replace('Z', '+00:00')
-                        
-                        # Parse with multiple format attempts
-                        try:
-                            return pd.to_datetime(date_str, format='ISO8601')
-                        except:
-                            try:
-                                return pd.to_datetime(date_str, format='mixed')
-                            except:
-                                return pd.to_datetime(date_str, errors='coerce')
-                    except Exception as e:
-                        return None
-                
-                # Parse dates
-                data_clean['parsed_date'] = data_clean[date_col].apply(safe_parse_date)
-                
-                # Drop rows where parsing failed
-                data_clean = data_clean.dropna(subset=['parsed_date'])
-                
-                if data_clean.empty:
-                    st.warning(f"Could not parse any dates from '{date_col}'")
-                    return
-                
-                # Extract date part safely
-                data_clean['date_only'] = data_clean['parsed_date'].apply(
-                    lambda x: x.date() if hasattr(x, 'date') else None
-                )
-                
-                # Remove any rows where date extraction failed
-                data_clean = data_clean.dropna(subset=['date_only'])
-                
-                if data_clean.empty:
-                    st.warning("Could not extract dates from parsed values")
-                    return
-                
-                # Sort by date
-                data_clean = data_clean.sort_values('date_only')
-                
-                # Display date range info
-                date_range_col1, date_range_col2, date_range_col3 = st.columns(3)
-                
-                with date_range_col1:
-                    earliest = data_clean['date_only'].min()
-                    st.metric("📅 Earliest Date", str(earliest))
-                
-                with date_range_col2:
-                    latest = data_clean['date_only'].max()
-                    st.metric("📅 Latest Date", str(latest))
-                
-                with date_range_col3:
-                    date_range = (latest - earliest).days
-                    st.metric("📊 Date Range", f"{date_range} days")
-                
-                st.markdown("---")
-                
-                # Create two columns for charts
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📈 Conflict Score Trends")
-                    if 'conflict_score' in data_clean.columns:
-                        # Group by date
-                        daily_conflict = data_clean.groupby('date_only')['conflict_score'].agg(['mean', 'count']).reset_index()
-                        
-                        if not daily_conflict.empty:
-                            # Create figure with two y-axes
-                            fig = go.Figure()
-                            
-                            # Add average conflict score line
-                            fig.add_trace(go.Scatter(
-                                x=daily_conflict['date_only'],
-                                y=daily_conflict['mean'],
-                                mode='lines+markers',
-                                name='Avg Conflict Score',
-                                line=dict(color='#FF4B4B', width=3),
-                                marker=dict(size=8)
-                            ))
-                            
-                            # Add event count as bars (secondary axis)
-                            fig.add_trace(go.Bar(
-                                x=daily_conflict['date_only'],
-                                y=daily_conflict['count'],
-                                name='Event Count',
-                                yaxis='y2',
-                                marker_color='rgba(30, 136, 229, 0.6)',
-                                opacity=0.7
-                            ))
-                            
-                            # Update layout with dual axes
-                            fig.update_layout(
-                                title='Daily Conflict Score & Event Count',
-                                xaxis_title='Date',
-                                yaxis=dict(
-                                    title='Avg Conflict Score',
-                                    titlefont=dict(color='#FF4B4B'),
-                                    tickfont=dict(color='#FF4B4B'),
-                                    range=[0, 1]
-                                ),
-                                yaxis2=dict(
-                                    title='Event Count',
-                                    titlefont=dict(color='#1E88E5'),
-                                    tickfont=dict(color='#1E88E5'),
-                                    overlaying='y',
-                                    side='right'
-                                ),
-                                legend=dict(x=0, y=1.1),
-                                height=400,
-                                hovermode='x unified'
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info("No conflict score data available for trends")
-                    else:
-                        st.info("Conflict score column not found in data")
-                
-                with col2:
-                    st.subheader("⚠️ Risk Level Trends")
-                    if 'risk_level' in data_clean.columns:
-                        # Create pivot table for risk levels
-                        risk_pivot = pd.crosstab(data_clean['date_only'], data_clean['risk_level'])
-                        
-                        if not risk_pivot.empty:
-                            # Ensure all risk levels are present
-                            for risk in ['Low', 'Medium', 'High', 'Critical']:
-                                if risk not in risk_pivot.columns:
-                                    risk_pivot[risk] = 0
-                            
-                            # Reorder columns
-                            risk_pivot = risk_pivot[['Low', 'Medium', 'High', 'Critical']]
-                            
-                            # Create stacked area chart
-                            fig = go.Figure()
-                            
-                            colors = {
-                                'Low': '#00C851',
-                                'Medium': '#FFBB33',
-                                'High': '#FF8800',
-                                'Critical': '#CC0000'
-                            }
-                            
-                            # Add traces for each risk level (in reverse order for proper stacking)
-                            for risk_level in ['Critical', 'High', 'Medium', 'Low']:
-                                if risk_level in risk_pivot.columns:
-                                    fig.add_trace(go.Scatter(
-                                        x=risk_pivot.index,
-                                        y=risk_pivot[risk_level],
-                                        mode='lines',
-                                        name=risk_level,
-                                        stackgroup='one',
-                                        line=dict(width=0.5, color=colors.get(risk_level)),
-                                        fillcolor=colors.get(risk_level, '#CCCCCC')
-                                    ))
-                            
-                            fig.update_layout(
-                                title='Daily Risk Level Distribution',
-                                xaxis_title='Date',
-                                yaxis_title='Number of Events',
-                                hovermode='x unified',
-                                height=400,
-                                showlegend=True
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Add risk level statistics
-                            st.markdown("**Risk Level Totals:**")
-                            risk_totals = data_clean['risk_level'].value_counts()
-                            risk_cols = st.columns(4)
-                            for idx, (risk_level, count) in enumerate(risk_totals.items()):
-                                with risk_cols[idx % 4]:
-                                    color_class = f"risk-{risk_level.lower()}"
-                                    st.markdown(f'<div class="{color_class}">{risk_level}: {count}</div>', 
-                                              unsafe_allow_html=True)
-                        else:
-                            st.info("No risk level data available for trends")
-                    else:
-                        st.info("Risk level column not found in data")
-                
-                # Additional insights
-                st.markdown("---")
-                st.subheader("📊 Additional Insights")
-                
-                insight_col1, insight_col2 = st.columns(2)
-                
-                with insight_col1:
-                    # Peak conflict days
-                    if 'conflict_score' in data_clean.columns:
-                        peak_days = data_clean.groupby('date_only')['conflict_score'].mean().nlargest(3)
-                        st.write("**Highest Conflict Days:**")
-                        for date, score in peak_days.items():
-                            st.write(f"• {date}: {score:.2f} avg conflict score")
-                
-                with insight_col2:
-                    # Risk level changes over time
-                    if 'risk_level' in data_clean.columns:
-                        # Calculate percentage of high-risk events per day
-                        daily_risk_pct = data_clean.groupby('date_only').apply(
-                            lambda x: (x['risk_level'].isin(['High', 'Critical'])).mean() * 100
+        if not date_col:
+            st.info("No date column found for trend analysis")
+            return
+        
+        try:
+            # Try to parse dates
+            data['parsed_date'] = pd.to_datetime(data[date_col], errors='coerce')
+            data_clean = data.dropna(subset=['parsed_date'])
+            
+            if data_clean.empty:
+                st.info("No valid dates found for trend analysis")
+                return
+            
+            # Extract date part
+            data_clean['date_only'] = data_clean['parsed_date'].dt.date
+            
+            # Sort by date
+            data_clean = data_clean.sort_values('date_only')
+            
+            # Create two columns for charts
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Conflict Score Trends")
+                if 'conflict_score' in data_clean.columns:
+                    # Group by date
+                    daily_conflict = data_clean.groupby('date_only')['conflict_score'].agg(['mean', 'count']).reset_index()
+                    
+                    if not daily_conflict.empty:
+                        # SIMPLE line chart (no dual axis)
+                        fig = px.line(
+                            daily_conflict,
+                            x='date_only',
+                            y='mean',
+                            title='Daily Average Conflict Score',
+                            labels={'date_only': 'Date', 'mean': 'Avg Conflict Score'}
                         )
                         
-                        if not daily_risk_pct.empty:
-                            avg_high_risk = daily_risk_pct.mean()
-                            st.write(f"**Avg High/Critical Risk:** {avg_high_risk:.1f}% of daily events")
-                
-                # Raw data preview
-                with st.expander("📋 View Processed Data (with dates)"):
-                    preview_cols = ['date_only', 'risk_level', 'conflict_score', 'source', 'region']
-                    available_cols = [col for col in preview_cols if col in data_clean.columns]
-                    
-                    if available_cols:
-                        st.dataframe(data_clean[available_cols].head(20), use_container_width=True)
+                        # Customize
+                        fig.update_traces(
+                            line=dict(color='#FF4B4B', width=3),
+                            mode='lines+markers',
+                            marker=dict(size=8, color='#FF4B4B')
+                        )
+                        
+                        fig.update_layout(
+                            height=400,
+                            hovermode='x unified',
+                            xaxis_title='Date',
+                            yaxis_title='Conflict Score (0-1)',
+                            yaxis_range=[0, 1]
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Show event count separately
+                        st.caption(f"📅 Total events analyzed: {len(data_clean)}")
+                        avg_score = daily_conflict['mean'].mean()
+                        st.metric("Overall Avg Score", f"{avg_score:.2f}")
                     else:
-                        st.info("No preview columns available")
-                
-            except Exception as e:
-                st.error(f"Error creating trends: {str(e)}")
-                
-                # Debug information
-                with st.expander("🛠️ Detailed Error Information"):
-                    st.write(f"**Error Type:** {type(e).__name__}")
-                    st.write(f"**Error Message:** {str(e)}")
+                        st.info("No conflict score data available")
+                else:
+                    st.info("Conflict score column not found")
+            
+            with col2:
+                st.subheader("⚠️ Risk Level Distribution")
+                if 'risk_level' in data_clean.columns:
+                    # Create pivot table for risk levels
+                    risk_pivot = pd.crosstab(data_clean['date_only'], data_clean['risk_level'])
                     
-                    if date_col in data.columns:
-                        st.write(f"**Sample values from '{date_col}':**")
-                        sample_values = data[date_col].dropna().head(10).tolist()
-                        for i, val in enumerate(sample_values):
-                            st.code(f"{i+1}. {val}", language='text')
+                    if not risk_pivot.empty:
+                        # Ensure all risk levels are present
+                        for risk in ['Low', 'Medium', 'High', 'Critical']:
+                            if risk not in risk_pivot.columns:
+                                risk_pivot[risk] = 0
                         
-                        st.write("**Data types:**")
-                        st.write(f"Date column dtype: {data[date_col].dtype}")
+                        # Reorder columns
+                        risk_pivot = risk_pivot[['Low', 'Medium', 'High', 'Critical']]
                         
-                        # Try to parse one sample date manually
-                        st.write("**Manual parsing test:**")
-                        if len(sample_values) > 0:
-                            test_date = str(sample_values[0])
-                            st.write(f"Testing date: `{test_date}`")
-                            
-                            try:
-                                parsed = pd.to_datetime(test_date, format='ISO8601')
-                                st.success(f"✓ Successfully parsed as: {parsed}")
-                            except Exception as parse_error:
-                                st.error(f"✗ Failed to parse: {parse_error}")
+                        # Create simple line chart for each risk level
+                        fig = go.Figure()
+                        
+                        colors = {
+                            'Low': '#00C851',
+                            'Medium': '#FFBB33',
+                            'High': '#FF8800',
+                            'Critical': '#CC0000'
+                        }
+                        
+                        # Add trace for each risk level
+                        for risk_level in ['Low', 'Medium', 'High', 'Critical']:
+                            if risk_level in risk_pivot.columns:
+                                fig.add_trace(go.Scatter(
+                                    x=risk_pivot.index,
+                                    y=risk_pivot[risk_level],
+                                    mode='lines+markers',
+                                    name=risk_level,
+                                    line=dict(width=2, color=colors.get(risk_level)),
+                                    marker=dict(size=6)
+                                ))
+                        
+                        fig.update_layout(
+                            title='Risk Level Trends Over Time',
+                            xaxis_title='Date',
+                            yaxis_title='Number of Events',
+                            hovermode='x unified',
+                            height=400,
+                            showlegend=True
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Risk level statistics
+                        st.markdown("**Risk Level Summary:**")
+                        risk_totals = data_clean['risk_level'].value_counts()
+                        
+                        # Display in a nice grid
+                        for risk_level in ['Critical', 'High', 'Medium', 'Low']:
+                            if risk_level in risk_totals:
+                                count = risk_totals[risk_level]
+                                percentage = (count / len(data_clean)) * 100
+                                color_class = f"risk-{risk_level.lower()}"
+                                st.markdown(
+                                    f'<div class="{color_class}" style="padding: 0.5rem; margin: 0.25rem 0; border-radius: 0.25rem;">'
+                                    f'{risk_level}: {count} events ({percentage:.1f}%)'
+                                    f'</div>',
+                                    unsafe_allow_html=True
+                                )
+                    else:
+                        st.info("No risk level data available")
+                else:
+                    st.info("Risk level column not found")
+            
+            # Date range and statistics
+            st.markdown("---")
+            
+            # Date information in columns
+            date_col1, date_col2, date_col3 = st.columns(3)
+            
+            with date_col1:
+                earliest = data_clean['date_only'].min()
+                st.metric("📅 Earliest Date", str(earliest))
+            
+            with date_col2:
+                latest = data_clean['date_only'].max()
+                st.metric("📅 Latest Date", str(latest))
+            
+            with date_col3:
+                date_range = (latest - earliest).days
+                st.metric("📊 Date Range", f"{date_range} days")
+            
+            # Additional insights
+            st.markdown("---")
+            st.subheader("📈 Quick Insights")
+            
+            insight_col1, insight_col2, insight_col3 = st.columns(3)
+            
+            with insight_col1:
+                if 'conflict_score' in data_clean.columns:
+                    max_conflict = data_clean['conflict_score'].max()
+                    st.metric("Peak Conflict", f"{max_conflict:.2f}")
+            
+            with insight_col2:
+                if 'risk_level' in data_clean.columns:
+                    high_risk_count = (data_clean['risk_level'].isin(['High', 'Critical'])).sum()
+                    st.metric("High/Critical Events", high_risk_count)
+            
+            with insight_col3:
+                total_events = len(data_clean)
+                st.metric("Total Events", total_events)
+            
+            # Data preview
+            with st.expander("🔍 View Sample Data (10 records)"):
+                preview_cols = ['date_only', 'risk_level', 'conflict_score', 'source', 'region']
+                available_cols = [col for col in preview_cols if col in data_clean.columns]
                 
-                st.info("Could not generate trend visualizations. Please check your data format.")
-        else:
-            st.info("No date column found for trend analysis. Available columns:")
-            st.write(list(data.columns))
+                if available_cols:
+                    st.dataframe(
+                        data_clean[available_cols].head(10),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("No preview data available")
+            
+        except Exception as e:
+            st.error(f"Error creating trends: {str(e)}")
+            
+            # Show helpful debug info
+            with st.expander("🛠️ Debug Information"):
+                st.write(f"**Error:** {type(e).__name__}")
+                st.write(f"**Message:** {str(e)}")
+                
+                if date_col in data.columns:
+                    st.write(f"**Date column:** {date_col}")
+                    st.write("**Sample values:**")
+                    sample = data[date_col].dropna().head(3).tolist()
+                    for val in sample:
+                        st.code(f"{val}")
+                
+                st.write("**Available columns:**")
+                st.write(list(data.columns))
+            
+            st.info("Please check your data format or try loading demo data.")
     
     def render_alerts_tab(self):
         """Render alerts tab - FIXED with simple predictor"""
