@@ -1,5 +1,6 @@
 """
-Simple ML Predictor - Fixed for categorical data
+Simple ML Predictor - Enhanced with Google Trends
+Fixed for categorical data with Google Trends features
 """
 import pandas as pd
 import numpy as np
@@ -18,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SimpleConflictPredictor:
-    """Simple predictor that handles categorical data properly"""
+    """Simple predictor with Google Trends features"""
     
     def __init__(self, model_dir: str = 'models'):
         self.model_dir = model_dir
@@ -28,8 +29,69 @@ class SimpleConflictPredictor:
         self.label_encoder = LabelEncoder()
         self.source_encoder = LabelEncoder()
         
+        # Google Trends configuration
+        self.google_trends_weight = 0.3  # Weight for Google Trends in predictions
+        
         # Initialize with default model
         self.load_or_train_default()
+    
+    def enhance_with_google_trends(self, text: str, region: str) -> Dict:
+        """Enhance prediction with Google Trends data"""
+        try:
+            # Import inside function to avoid circular imports
+            try:
+                from src.data_collection.google_trends_collector import GoogleTrendsCollector
+                GOOGLE_TRENDS_AVAILABLE = True
+            except ImportError:
+                GOOGLE_TRENDS_AVAILABLE = False
+                logger.info("Google Trends collector not available")
+            
+            if not GOOGLE_TRENDS_AVAILABLE:
+                return {
+                    'regional_interest': 0,
+                    'overall_trends_risk': 0,
+                    'has_trends_data': False,
+                    'message': 'Google Trends not installed'
+                }
+            
+            collector = GoogleTrendsCollector()
+            
+            # Get trends for the region
+            regional_data = collector.get_interest_by_region('violence', 'REGION')
+            
+            if not regional_data.empty:
+                # Try to match the region (case-insensitive)
+                region_matches = regional_data[
+                    regional_data['region'].str.lower().str.contains(region.lower(), na=False)
+                ]
+                
+                if not region_matches.empty:
+                    region_score = region_matches['interest_score'].mean()
+                else:
+                    # If specific region not found, use Kenya average
+                    kenya_data = regional_data[regional_data['region'].str.lower() == 'kenya']
+                    region_score = kenya_data['interest_score'].mean() if not kenya_data.empty else 0
+                
+                # Get overall trends
+                trends_data = collector.collect_all_trends_data()
+                trends_risk = trends_data.get('risk_score', 0)
+                
+                logger.info(f"Google Trends data for {region}: interest={region_score}, risk={trends_risk}")
+                
+                return {
+                    'regional_interest': float(region_score) if not pd.isna(region_score) else 0,
+                    'overall_trends_risk': float(trends_risk),
+                    'has_trends_data': True
+                }
+                
+        except Exception as e:
+            logger.warning(f"Could not get Google Trends data: {e}")
+        
+        return {
+            'regional_interest': 0,
+            'overall_trends_risk': 0,
+            'has_trends_data': False
+        }
     
     def prepare_input(self, text: str, features: Dict = None) -> Dict:
         """Prepare input features for prediction"""
@@ -93,9 +155,13 @@ class SimpleConflictPredictor:
         if os.path.exists(model_path):
             try:
                 self.model = joblib.load(model_path)
+                # Also try to load label encoder
+                encoder_path = os.path.join(self.model_dir, 'label_encoder.joblib')
+                if os.path.exists(encoder_path):
+                    self.label_encoder = joblib.load(encoder_path)
                 logger.info("✅ Loaded existing model")
-            except:
-                logger.warning("Could not load model, training new one...")
+            except Exception as e:
+                logger.warning(f"Could not load model: {e}. Training new one...")
                 self.train_default_model()
         else:
             self.train_default_model()
@@ -170,10 +236,68 @@ class SimpleConflictPredictor:
         logger.info(f"✅ Trained and saved simple model to {model_path}")
     
     def predict_risk(self, text: str, features: Dict = None) -> Dict:
-        """Predict risk for given text"""
+        """Predict risk with Google Trends enhancement"""
         if self.model is None:
             self.load_or_train_default()
         
+        # Get base prediction
+        base_prediction = self._get_base_prediction(text, features)
+        
+        # Enhance with Google Trends if available
+        if features and 'region' in features and features['region']:
+            try:
+                trends_data = self.enhance_with_google_trends(text, features['region'])
+                
+                if trends_data['has_trends_data']:
+                    # Adjust risk based on Google Trends
+                    regional_interest = trends_data['regional_interest']
+                    overall_risk = trends_data['overall_trends_risk']
+                    
+                    # Normalize regional interest (0-100 scale to 0-1)
+                    normalized_interest = min(regional_interest / 100, 1.0)
+                    
+                    # Combine factors (70% regional interest, 30% overall risk)
+                    trends_factor = (
+                        normalized_interest * 0.7 + 
+                        overall_risk * 0.3
+                    )
+                    
+                    # Get current confidence
+                    current_confidence = base_prediction.get('confidence', 0.7)
+                    
+                    # Apply Google Trends weight (blend with original confidence)
+                    enhanced_confidence = (
+                        current_confidence * (1 - self.google_trends_weight) +
+                        trends_factor * self.google_trends_weight
+                    )
+                    
+                    # Adjust risk level if Google Trends suggests higher risk
+                    original_risk = base_prediction['risk_level']
+                    risk_order = {'Low': 0, 'Medium': 1, 'High': 2, 'Critical': 3}
+                    
+                    if trends_factor > 0.7 and risk_order.get(original_risk, 1) < 2:
+                        # Google Trends suggests high risk, upgrade prediction
+                        base_prediction['risk_level'] = 'High'
+                    elif trends_factor > 0.5 and risk_order.get(original_risk, 1) < 1:
+                        # Google Trends suggests medium risk, upgrade prediction
+                        base_prediction['risk_level'] = 'Medium'
+                    
+                    base_prediction['confidence'] = enhanced_confidence
+                    base_prediction['google_trends_impact'] = trends_factor
+                    base_prediction['google_trends_regional_interest'] = regional_interest
+                    base_prediction['google_trends_overall_risk'] = overall_risk
+                    base_prediction['has_google_trends'] = True
+                    
+                    logger.info(f"Enhanced prediction with Google Trends: factor={trends_factor:.2f}")
+                    
+            except Exception as e:
+                logger.warning(f"Error enhancing with Google Trends: {e}")
+                # Continue with base prediction
+        
+        return base_prediction
+    
+    def _get_base_prediction(self, text: str, features: Dict = None) -> Dict:
+        """Get base ML prediction without Google Trends"""
         # Prepare input
         input_data = self.prepare_input(text, features)
         
@@ -210,11 +334,12 @@ class SimpleConflictPredictor:
                     'has_conflict': input_data['has_conflict_keywords'],
                     'sentiment': input_data['sentiment']
                 },
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'has_google_trends': False
             }
             
         except Exception as e:
-            logger.error(f"Prediction error: {e}")
+            logger.error(f"ML prediction error: {e}")
             
             # Fallback to rule-based prediction
             return self.rule_based_prediction(text, features)
@@ -246,49 +371,114 @@ class SimpleConflictPredictor:
             'confidence': 0.7,
             'recommended_action': self.get_recommended_action(risk_level),
             'method': 'rule_based',
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'has_google_trends': False
         }
     
     def get_recommended_action(self, risk_level: str) -> str:
         """Get recommended action based on risk level"""
         actions = {
-            'Critical': '🚨 IMMEDIATE RESPONSE: Activate emergency protocols',
-            'High': '⚠️ HIGH ALERT: Increase surveillance and preparedness',
-            'Medium': '🔶 MONITOR: Maintain vigilance and gather information',
-            'Low': '✅ NORMAL: Continue routine monitoring'
+            'Critical': '🚨 IMMEDIATE RESPONSE: Activate emergency protocols, deploy rapid response teams, notify all authorities',
+            'High': '⚠️ HIGH ALERT: Increase surveillance to maximum, prepare emergency teams, notify regional authorities',
+            'Medium': '🔶 ELEVATED AWARENESS: Maintain heightened vigilance, gather intelligence, prepare contingency plans',
+            'Low': '✅ NORMAL MONITORING: Continue routine surveillance, standard reporting, regular communication'
         }
-        return actions.get(risk_level, 'Monitor situation')
+        return actions.get(risk_level, 'Monitor situation and gather more information')
     
-    def batch_predict(self, texts: list) -> list:
+    def batch_predict(self, texts: list, features_list: list = None) -> list:
         """Predict risk for multiple texts"""
         predictions = []
-        for text in texts:
-            predictions.append(self.predict_risk(text))
+        
+        if features_list is None:
+            features_list = [{} for _ in texts]
+        
+        for text, features in zip(texts, features_list):
+            predictions.append(self.predict_risk(text, features))
+        
         return predictions
+    
+    def evaluate_google_trends_impact(self, predictions: list) -> Dict:
+        """Evaluate how Google Trends affected predictions"""
+        total_predictions = len(predictions)
+        if total_predictions == 0:
+            return {}
+        
+        google_trends_used = sum(1 for p in predictions if p.get('has_google_trends', False))
+        avg_impact = np.mean([p.get('google_trends_impact', 0) for p in predictions 
+                            if p.get('has_google_trends', False)] or [0])
+        
+        # Count risk level changes
+        original_risks = []
+        final_risks = []
+        
+        for pred in predictions:
+            if 'original_risk' in pred and 'risk_level' in pred:
+                original_risks.append(pred['original_risk'])
+                final_risks.append(pred['risk_level'])
+        
+        changes = sum(1 for o, f in zip(original_risks, final_risks) if o != f)
+        
+        return {
+            'total_predictions': total_predictions,
+            'google_trends_used': google_trends_used,
+            'google_trends_percentage': (google_trends_used / total_predictions * 100) if total_predictions > 0 else 0,
+            'average_impact': avg_impact,
+            'risk_level_changes': changes
+        }
 
-def test_predictor():
-    """Test the simple predictor"""
-    print("🧪 Testing Simple Predictor")
-    print("=" * 50)
+def test_enhanced_predictor():
+    """Test the enhanced predictor with Google Trends"""
+    print("🧪 Testing Enhanced Predictor with Google Trends")
+    print("=" * 60)
     
     predictor = SimpleConflictPredictor()
     
     test_cases = [
-        "Violent clashes in Nairobi with multiple injuries reported",
-        "Peaceful community meeting in Kisumu",
-        "Explosion reported in Mombasa port area",
-        "Normal day with regular activities"
+        ("Violent clashes in Nairobi with multiple injuries reported", {'region': 'Nairobi'}),
+        ("Peaceful community meeting in Kisumu", {'region': 'Kisumu'}),
+        ("Explosion reported in Mombasa port area", {'region': 'Mombasa'}),
+        ("Normal day with regular activities in Nakuru", {'region': 'Nakuru'})
     ]
     
-    for i, text in enumerate(test_cases, 1):
-        print(f"\nTest {i}: {text}")
-        result = predictor.predict_risk(text)
+    for i, (text, features) in enumerate(test_cases, 1):
+        print(f"\nTest {i}:")
+        print(f"Text: {text}")
+        print(f"Region: {features.get('region', 'Unknown')}")
+        
+        result = predictor.predict_risk(text, features)
+        
         print(f"  Risk Level: {result['risk_level']}")
         print(f"  Confidence: {result['confidence']:.2%}")
-        print(f"  Action: {result['recommended_action']}")
+        print(f"  Action: {result['recommended_action'][:50]}...")
+        
+        if result.get('has_google_trends'):
+            print(f"  Google Trends Impact: {result.get('google_trends_impact', 0):.2%}")
+            print(f"  Regional Interest: {result.get('google_trends_regional_interest', 0):.1f}")
+        else:
+            print(f"  Google Trends: Not used (may not be installed or region not found)")
     
-    print("\n" + "=" * 50)
-    print("✅ Simple predictor test complete!")
+    # Test batch prediction
+    print("\n📊 Testing Batch Prediction:")
+    texts = ["Protest in Nairobi", "Peace in Mombasa", "Attack in Kisumu"]
+    features_list = [{'region': 'Nairobi'}, {'region': 'Mombasa'}, {'region': 'Kisumu'}]
+    
+    batch_results = predictor.batch_predict(texts, features_list)
+    
+    for i, result in enumerate(batch_results, 1):
+        print(f"  {i}. {texts[i-1]} → {result['risk_level']} ({result['confidence']:.0%})")
+    
+    # Evaluate Google Trends impact
+    print("\n📈 Google Trends Impact Evaluation:")
+    impact_stats = predictor.evaluate_google_trends_impact(batch_results)
+    print(f"  Total predictions: {impact_stats.get('total_predictions', 0)}")
+    print(f"  Google Trends used: {impact_stats.get('google_trends_used', 0)}")
+    print(f"  Usage percentage: {impact_stats.get('google_trends_percentage', 0):.1f}%")
+    print(f"  Average impact: {impact_stats.get('average_impact', 0):.2%}")
+    
+    print("\n" + "=" * 60)
+    print("✅ Enhanced predictor test complete!")
+    print("\n💡 Note: Google Trends requires internet connection and may have rate limits.")
+    print("   Install with: pip install pytrends")
 
 if __name__ == "__main__":
-    test_predictor()
+    test_enhanced_predictor()

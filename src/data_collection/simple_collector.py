@@ -1,6 +1,6 @@
 """
-Simple Data Collector - FIXED VERSION
-Includes proper risk_level assignment
+Simple Data Collector - FIXED VERSION with Google Trends
+Includes proper risk_level assignment and Google Trends integration
 """
 import requests
 import pandas as pd
@@ -12,11 +12,17 @@ import numpy as np
 import logging
 from typing import List, Dict
 
+# Add Google Trends integration
+try:
+    from .google_trends_collector import GoogleTrendsCollector
+except ImportError:
+    GoogleTrendsCollector = None
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SimpleDataCollector:
-    """Collect data without Reddit API - FIXED"""
+    """Collect data without Reddit API - UPDATED with Google Trends"""
     
     def __init__(self):
         self.newsapi_key = os.getenv('NEWS_API_KEY', '')
@@ -39,6 +45,17 @@ class SimpleDataCollector:
             'Medium': ['demonstration', 'march', 'strike', 'dispute', 'conflict'],
             'Low': ['peace', 'calm', 'normal', 'stable', 'quiet']
         }
+        
+        # Initialize Google Trends collector
+        self.google_trends_collector = None
+        if GoogleTrendsCollector:
+            try:
+                self.google_trends_collector = GoogleTrendsCollector()
+                logger.info("✅ Google Trends collector initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize Google Trends: {e}")
+        else:
+            logger.info("⚠️ Google Trends not available (install pytrends)")
     
     def assign_risk_level(self, text: str) -> str:
         """Assign risk level based on keywords in text"""
@@ -52,9 +69,54 @@ class SimpleDataCollector:
         # Default to Medium if no keywords found
         return 'Medium'
     
+    def fetch_google_trends(self) -> pd.DataFrame:
+        """Fetch Google Trends data"""
+        if not self.google_trends_collector:
+            logger.info("⚠️ Google Trends collector not available")
+            return pd.DataFrame()
+        
+        try:
+            logger.info("🌐 Fetching Google Trends data...")
+            
+            # Collect all trends data
+            trends_data = self.google_trends_collector.collect_all_trends_data()
+            
+            # Format for main system
+            formatted_data = self.google_trends_collector.format_for_main_system(trends_data)
+            
+            if not formatted_data.empty:
+                # Add Google Trends risk score to each record
+                formatted_data['google_trends_risk'] = trends_data['risk_score']
+                
+                # Add required columns if missing
+                required_cols = ['conflict_score', 'vader_compound', 'has_conflict_keywords']
+                for col in required_cols:
+                    if col not in formatted_data.columns:
+                        if col == 'conflict_score':
+                            # Convert interest score to conflict score (0-100 to 0-1)
+                            formatted_data[col] = formatted_data.get('interest_score', 0) / 100
+                        elif col == 'vader_compound':
+                            # Map interest to sentiment
+                            formatted_data[col] = formatted_data.get('interest_score', 0) / 50 - 1  # Scale -1 to 1
+                        elif col == 'has_conflict_keywords':
+                            formatted_data[col] = 1
+                
+                logger.info(f"📊 Google Trends: Collected {len(formatted_data)} records")
+                logger.info(f"📈 Google Trends Risk Score: {trends_data['risk_score']:.2f}")
+                
+                return formatted_data
+            else:
+                logger.info("⚠️ Google Trends returned no data (may be rate limited)")
+                
+        except Exception as e:
+            logger.error(f"Google Trends error: {e}")
+        
+        return pd.DataFrame()
+    
     def fetch_newsapi_safe(self, query: str = "Kenya conflict", days: int = 7) -> pd.DataFrame:
         """Fetch from NewsAPI with error handling"""
         if not self.use_newsapi:
+            logger.info("⚠️ NewsAPI not configured or in demo mode")
             return pd.DataFrame()
         
         try:
@@ -228,8 +290,8 @@ class SimpleDataCollector:
         return pd.DataFrame(records)
     
     def collect_all_no_reddit(self) -> pd.DataFrame:
-        """Collect from all sources (except Reddit)"""
-        logger.info("🚀 Collecting data (No Reddit needed)...")
+        """Collect from all sources (including Google Trends)"""
+        logger.info("🚀 Collecting data from all sources...")
         
         all_data = []
         
@@ -237,15 +299,26 @@ class SimpleDataCollector:
         news_data = self.fetch_newsapi_safe()
         if not news_data.empty:
             all_data.append(news_data)
+            logger.info(f"✅ NewsAPI: {len(news_data)} records")
         
         # 2. Always try GDELT (free)
         gdelt_data = self.fetch_gdelt_free()
         if not gdelt_data.empty:
             all_data.append(gdelt_data)
+            logger.info(f"✅ GDELT: {len(gdelt_data)} records")
         
-        # 3. Always add synthetic data for consistency
+        # 3. Google Trends (NEW!)
+        trends_data = self.fetch_google_trends()
+        if not trends_data.empty:
+            all_data.append(trends_data)
+            logger.info(f"✅ Google Trends: {len(trends_data)} records")
+        else:
+            logger.info("⚠️ Google Trends: No data collected")
+        
+        # 4. Always add synthetic data for consistency
         synth_data = self.generate_smart_synthetic(50)
         all_data.append(synth_data)
+        logger.info(f"✅ Synthetic: {len(synth_data)} records")
         
         # Combine all data
         if all_data:
@@ -272,41 +345,100 @@ class SimpleDataCollector:
                     else:
                         combined[col] = ''
             
+            # Add Google Trends risk to all records if available
+            if not trends_data.empty and 'google_trends_risk' in trends_data.columns:
+                google_risk = trends_data['google_trends_risk'].iloc[0] if len(trends_data) > 0 else 0
+                combined['google_trends_risk'] = google_risk
+            
             # Save to file
             os.makedirs('data/raw', exist_ok=True)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"data/raw/collected_no_reddit_{timestamp}.csv"
+            filename = f"data/raw/collected_with_trends_{timestamp}.csv"
             combined.to_csv(filename, index=False)
             
-            logger.info(f"✅ Collected {len(combined)} total records (No Reddit)")
-            logger.info(f"💾 Saved to {filename}")
-            
             # Data source breakdown
+            logger.info("\n📊 DATA COLLECTION SUMMARY:")
+            logger.info(f"Total records: {len(combined)}")
+            
             source_counts = combined['source'].value_counts()
             for source, count in source_counts.items():
-                logger.info(f"   {source}: {count} records")
+                logger.info(f"  {source}: {count} records")
+            
+            # Risk level breakdown
+            if 'risk_level' in combined.columns:
+                risk_counts = combined['risk_level'].value_counts()
+                logger.info("\n⚠️ RISK LEVEL DISTRIBUTION:")
+                for risk, count in risk_counts.items():
+                    logger.info(f"  {risk}: {count} events")
+            
+            # Google Trends info
+            if 'google_trends_risk' in combined.columns:
+                google_risk_value = combined['google_trends_risk'].iloc[0]
+                logger.info(f"\n🌐 GOOGLE TRENDS RISK SCORE: {google_risk_value:.2f}")
+            
+            logger.info(f"\n💾 Saved to {filename}")
             
             return combined
         
+        logger.error("❌ No data collected from any source")
         return pd.DataFrame()
 
 def main():
-    """Test the Reddit-free collector"""
+    """Test the enhanced collector with Google Trends"""
+    print("🧪 Testing Enhanced Data Collector with Google Trends")
+    print("=" * 60)
+    
     collector = SimpleDataCollector()
+    
+    print("\n1. Testing Google Trends integration...")
+    if collector.google_trends_collector:
+        print("   ✅ Google Trends collector available")
+        
+        # Test Google Trends directly
+        trends_data = collector.fetch_google_trends()
+        if not trends_data.empty:
+            print(f"   ✅ Collected {len(trends_data)} Google Trends records")
+            print(f"   Sample: {trends_data.iloc[0]['title'][:50]}...")
+        else:
+            print("   ⚠️ Google Trends returned no data (may be rate limited)")
+    else:
+        print("   ⚠️ Google Trends not available (install pytrends)")
+        print("   Install with: pip install pytrends")
+    
+    print("\n2. Collecting data from all sources...")
     data = collector.collect_all_no_reddit()
     
     if not data.empty:
-        print("\n🎉 SUCCESS! Data collected without Reddit API:")
-        print(f"Total records: {len(data)}")
-        print("\nColumns available:", list(data.columns))
-        print("\nRisk Level distribution:")
-        print(data['risk_level'].value_counts())
+        print(f"\n🎉 SUCCESS! Collected {len(data)} total records")
+        print(f"\n📊 Sources breakdown:")
+        source_counts = data['source'].value_counts()
+        for source, count in source_counts.items():
+            print(f"   {source}: {count} records")
+        
+        print(f"\n⚠️ Risk Level distribution:")
+        if 'risk_level' in data.columns:
+            print(data['risk_level'].value_counts())
+        
+        if 'google_trends_risk' in data.columns:
+            google_risk = data['google_trends_risk'].iloc[0]
+            print(f"\n🌐 Google Trends Risk Score: {google_risk:.2f}")
         
         # Save for dashboard
-        data.to_csv("data/processed/latest_no_reddit.csv", index=False)
-        print("\n✅ Data saved to 'data/processed/latest_no_reddit.csv'")
+        data.to_csv("data/processed/latest_with_trends.csv", index=False)
+        print(f"\n✅ Data saved to 'data/processed/latest_with_trends.csv'")
+        
+        # Show sample
+        print(f"\n📋 Sample data (first 3 records):")
+        sample_cols = ['source', 'title', 'risk_level', 'region']
+        available_cols = [col for col in sample_cols if col in data.columns]
+        if available_cols:
+            print(data[available_cols].head(3).to_string())
     else:
-        print("⚠️ No data collected. Check your NewsAPI key or internet connection.")
+        print("❌ No data collected. Check your internet connection.")
+        print("💡 Try installing pytrends: pip install pytrends")
+    
+    print("\n" + "=" * 60)
+    print("✅ Test complete!")
 
 if __name__ == "__main__":
     main()

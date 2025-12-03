@@ -14,6 +14,12 @@ import json
 
 from functools import lru_cache
 
+# Add to the imports section:
+try:
+    from src.data_collection.google_trends_collector import GoogleTrendsCollector
+except ImportError:
+    GoogleTrendsCollector = None
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_data():
     # Your data loading logic here
@@ -441,7 +447,7 @@ class ConflictDashboard:
                 st.metric("⏰ Latest Data", "N/A")
         
         # Main dashboard tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🗺️ Map", "📈 Trends", "🚨 Alerts"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "🗺️ Map", "📈 Trends", "🌐 Google Trends", "🚨 Alerts"])
         
         with tab1:
             self.render_overview_tab()
@@ -454,6 +460,238 @@ class ConflictDashboard:
         
         with tab4:
             self.render_alerts_tab()
+            
+        with tab5:
+            self.render_google_trends_tab()
+            
+            
+    # Add the new render_google_trends_tab method:
+    def render_google_trends_tab(self):
+        """Render Google Trends analysis tab"""
+        st.markdown('<div class="sub-header">🌐 Google Trends Analysis</div>', 
+                unsafe_allow_html=True)
+        
+        st.info("""
+        **Google Trends Analysis** shows public search interest in conflict-related topics.
+        Rising search trends can be early indicators of emerging conflicts.
+        """)
+        
+        # Initialize Google Trends collector
+        if GoogleTrendsCollector is None:
+            st.warning("⚠️ Google Trends module not available. Install pytrends: `pip install pytrends`")
+            return
+        
+        # Create columns for controls
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            keywords = st.multiselect(
+                "Select Keywords",
+                options=['violence', 'protest', 'riot', 'security', 'election', 'conflict'],
+                default=['violence', 'protest']
+            )
+        
+        with col2:
+            timeframe = st.selectbox(
+                "Timeframe",
+                options=['now 7-d', 'today 1-m', 'today 3-m', 'today 12-m'],
+                index=1
+            )
+        
+        with col3:
+            region = st.selectbox(
+                "Region",
+                options=['Kenya', 'Nairobi', 'Mombasa', 'Kisumu'],
+                index=0
+            )
+        
+        # Collect button
+        if st.button("🌐 Collect Google Trends Data", type="primary"):
+            with st.spinner("Collecting Google Trends data..."):
+                try:
+                    collector = GoogleTrendsCollector()
+                    
+                    # Collect interest over time
+                    interest_data = collector.get_interest_over_time(
+                        keywords=keywords,
+                        timeframe=timeframe
+                    )
+                    
+                    # Collect trending searches
+                    trending_data = collector.get_trending_searches('KE')
+                    
+                    # Collect regional interest
+                    regional_data = pd.DataFrame()
+                    for keyword in keywords[:2]:  # Limit to 2 keywords
+                        region_df = collector.get_interest_by_region(keyword, 'REGION')
+                        regional_data = pd.concat([regional_data, region_df])
+                    
+                    # Display results
+                    if not interest_data.empty:
+                        st.subheader("📈 Search Interest Over Time")
+                        
+                        # Create line chart
+                        fig = px.line(
+                            interest_data,
+                            x='date',
+                            y='interest_score',
+                            color='keyword',
+                            title=f'Google Trends Interest: {", ".join(keywords)}',
+                            labels={'interest_score': 'Interest Score', 'date': 'Date'},
+                            height=400
+                        )
+                        
+                        fig.update_layout(
+                            hovermode='x unified',
+                            xaxis_title='Date',
+                            yaxis_title='Search Interest (0-100)'
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Calculate and display risk score
+                        risk_score = collector.calculate_risk_score_from_trends(interest_data)
+                        
+                        risk_col1, risk_col2, risk_col3 = st.columns(3)
+                        
+                        with risk_col1:
+                            st.metric("📊 Google Trends Risk", f"{risk_score:.2%}")
+                        
+                        with risk_col2:
+                            avg_interest = interest_data['interest_score'].mean()
+                            st.metric("📈 Avg Interest", f"{avg_interest:.0f}")
+                        
+                        with risk_col3:
+                            peak_interest = interest_data['interest_score'].max()
+                            st.metric("🔥 Peak Interest", f"{peak_interest:.0f}")
+                    
+                    # Display trending searches
+                    if not trending_data.empty:
+                        st.subheader("🔥 Currently Trending in Kenya")
+                        
+                        # Filter for conflict-related trends
+                        conflict_trends = trending_data[
+                            trending_data['trending_search'].str.contains(
+                                '|'.join(['violence', 'protest', 'riot', 'attack', 'security']),
+                                case=False
+                            )
+                        ]
+                        
+                        if not conflict_trends.empty:
+                            st.warning("⚠️ Conflict-related searches trending!")
+                            
+                            for idx, row in conflict_trends.iterrows():
+                                st.markdown(f"""
+                                <div style="background-color: #FFF3CD; padding: 1rem; margin: 0.5rem 0; border-radius: 0.5rem;">
+                                    🔥 **Trending:** {row['trending_search']}
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.success("✅ No conflict-related searches currently trending")
+                    
+                    # Display regional interest
+                    if not regional_data.empty:
+                        st.subheader("🗺️ Regional Interest Distribution")
+                        
+                        # Create bar chart
+                        fig = px.bar(
+                            regional_data,
+                            x='region',
+                            y='interest_score',
+                            color='keyword',
+                            barmode='group',
+                            title='Search Interest by Region',
+                            height=400
+                        )
+                        
+                        fig.update_layout(
+                            xaxis_title='Region',
+                            yaxis_title='Interest Score',
+                            xaxis={'categoryorder': 'total descending'}
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Highlight high-interest regions
+                        high_interest = regional_data[regional_data['interest_score'] > 50]
+                        if not high_interest.empty:
+                            st.info("📌 **High Interest Regions:**")
+                            for _, row in high_interest.iterrows():
+                                st.write(f"- {row['region']}: {row['keyword']} ({row['interest_score']})")
+                    
+                    # Display insights
+                    st.subheader("💡 Insights from Google Trends")
+                    
+                    insights_col1, insights_col2 = st.columns(2)
+                    
+                    with insights_col1:
+                        st.markdown("""
+                        **What rising search interest may indicate:**
+                        - 📈 **Increasing concern** about a topic
+                        - 🔥 **Emerging issues** gaining attention
+                        - ⚠️ **Potential escalation** of tensions
+                        - 📰 **Media coverage** driving public interest
+                        """)
+                    
+                    with insights_col2:
+                        st.markdown("""
+                        **How to interpret trends:**
+                        - **Sudden spikes**: Breaking events
+                        - **Sustained increases**: Growing issues
+                        - **Regional patterns**: Localized concerns
+                        - **Related queries**: Context and details
+                        """)
+                    
+                    # Export data option
+                    if st.button("📥 Export Google Trends Data"):
+                        all_data = pd.concat([
+                            interest_data,
+                            trending_data,
+                            regional_data
+                        ], ignore_index=True)
+                        
+                        csv = all_data.to_csv(index=False)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv,
+                            file_name=f"google_trends_{timestamp}.csv",
+                            mime="text/csv"
+                        )
+                    
+                except Exception as e:
+                    st.error(f"Error collecting Google Trends data: {e}")
+                    st.info("""
+                    **Troubleshooting tips:**
+                    1. Check your internet connection
+                    2. pytrends may have rate limits (wait 60 seconds)
+                    3. Try different keywords or timeframe
+                    """)
+        else:
+            # Show example data when button not pressed
+            st.info("👈 Click 'Collect Google Trends Data' to analyze search trends")
+            
+            # Show example of what we'll analyze
+            st.markdown("""
+            **Example analysis you'll get:**
+            
+            1. **Search Interest Over Time**
+            - Track how interest in conflict keywords changes
+            - Identify spikes and trends
+            
+            2. **Currently Trending Searches**
+            - Real-time trending topics in Kenya
+            - Flag conflict-related trends
+            
+            3. **Regional Interest Distribution**
+            - See which regions search most about conflicts
+            - Identify hotspots of concern
+            
+            4. **Risk Score Calculation**
+            - Algorithmic risk score based on search patterns
+            - Early warning indicator
+            """)    
     
     def render_overview_tab(self):
         """Render overview tab - FIXED with error handling"""

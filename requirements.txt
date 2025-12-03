@@ -43,3 +43,5 @@ tqdm
 # Testing
 pytest
 pytest-cov
+
+tenacity
