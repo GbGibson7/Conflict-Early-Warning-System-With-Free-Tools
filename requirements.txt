@@ -1,0 +1,45 @@
+# Core
+pandas
+numpy
+
+# Data Collection
+requests
+praw
+beautifulsoup4
+lxml
+
+# NLP & Text Processing
+nltk
+textblob
+vaderSentiment
+spacy
+python-dateutil
+
+# Machine Learning
+scikit-learn
+joblib
+imbalanced-learn
+
+# Visualization
+matplotlib
+seaborn
+plotly
+streamlit
+
+# Web & API
+fastapi
+uvicorn
+pydantic
+
+# Database
+sqlalchemy
+dataset
+
+# Utilities
+python-dotenv
+pytz
+tqdm
+
+# Testing
+pytest
+pytest-cov

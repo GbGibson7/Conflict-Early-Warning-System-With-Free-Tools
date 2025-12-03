@@ -1,0 +1,19 @@
+# Streamlit specific requirements
+streamlit
+pandas
+numpy
+plotly
+
+# Project dependencies
+requests
+praw
+beautifulsoup4
+nltk
+textblob
+vaderSentiment
+spacy
+scikit-learn
+joblib
+
+# For spaCy model
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.6.0/en_core_web_sm-3.6.0-py3-none-any.whl
