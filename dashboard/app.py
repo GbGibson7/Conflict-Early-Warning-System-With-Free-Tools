@@ -12,6 +12,18 @@ import sys
 import os
 import json
 
+from functools import lru_cache
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def load_data():
+    # Your data loading logic here
+    pass
+
+@st.cache_resource
+def load_model():
+    # Your model loading logic here
+    pass
+
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
